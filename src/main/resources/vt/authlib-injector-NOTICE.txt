@@ -1,0 +1,8 @@
+VT Launcher bundles authlib-injector (a Java agent) to show local skins and capes.
+
+authlib-injector
+  Copyright (C) yushijinhun and contributors
+  License: GNU Affero General Public License v3.0 (AGPL-3.0)
+  Source code: https://github.com/yushijinhun/authlib-injector
+
+The file is included unchanged and runs as a separate Java agent inside the game process.

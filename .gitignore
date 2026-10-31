@@ -1,0 +1,10 @@
+build/
+.gradle/
+out/
+installer/
+*.exe
+VT-Launcher-*.zip
+.idea/
+src/main/resources/vt/authlib-injector.jar
+installer-out/
+installer/*.bmp
