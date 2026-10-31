@@ -27,6 +27,7 @@ import vt.launcher.core.ContentManager.Entry;
 import vt.launcher.core.ContentManager.Type;
 import vt.launcher.core.Log;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
