@@ -1,0 +1,181 @@
+name: Build VT Launcher
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Extract zip into repo and delete it
+        shell: bash
+        run: |
+          shopt -s nullglob
+          zips=(./*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "No zip found, building repo as is"
+            exit 0
+          fi
+
+          tmp="$RUNNER_TEMP/unz"
+          rm -rf "$tmp" && mkdir -p "$tmp"
+          for z in "${zips[@]}"; do unzip -o -q "$z" -d "$tmp"; done
+          rm -rf "$tmp/__MACOSX"
+
+          found=$(find "$tmp" -name settings.gradle.kts | head -n1)
+          if [ -z "$found" ]; then
+            echo "settings.gradle.kts not found inside zip"
+            exit 1
+          fi
+          src=$(dirname "$found")
+          rm -rf "$src/.github" "$src/.git"
+
+          # the zip is the full source: remove old Java files so deleted classes do not stay behind
+          rm -rf src/main/java
+
+          cp -a "$src"/. .
+          git rm -q -f "${zips[@]}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Extract project from zip and remove zip"
+          git push
+
+      - name: Remove old source files that no longer exist
+        shell: bash
+        run: |
+          removed=0
+          for f in src/main/java/vt/launcher/ui/BackupsCard.java \
+                   src/main/java/vt/launcher/ui/ContentPage.java \
+                   src/main/java/vt/launcher/ui/ModrinthDialog.java \
+                   src/main/java/vt/launcher/core/Modrinth.java; do
+            if [ -f "$f" ]; then
+              git rm -q -f "$f"
+              removed=1
+            fi
+          done
+          if [ "$removed" = "1" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Remove old source files"
+            git push
+          fi
+
+  build:
+    needs: prepare
+    runs-on: windows-2022
+    steps:
+      - name: Checkout (after zip extraction)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+
+      # One version number for everything: version.txt (e.g. 2.1) + the build number -> 2.1.7
+      # The app shows it, the setup file has it, and it is the GitHub release name.
+      - name: Work out the version
+        shell: bash
+        run: |
+          if [ -f version.txt ]; then BASE=$(tr -d '\r\n ' < version.txt); else BASE=2.0; fi
+          echo "VERSION=$BASE.${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: 8.13
+
+      - name: Make icon from logo.png
+        shell: bash
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          from PIL import Image
+          p = "src/main/resources/vt/logo.png"
+          im = Image.open(p).convert("RGBA")
+          s = max(im.size)
+          c = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+          c.paste(im, ((s - im.width) // 2, (s - im.height) // 2))
+          c.save("src/main/resources/vt/vt.ico", sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          PY
+
+      # Skin support (authlib-injector) goes inside the app, so nothing is downloaded by the user later.
+      - name: Bundle authlib-injector (skin support)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, urllib.request, hashlib
+          meta = json.load(urllib.request.urlopen("https://authlib-injector.yushi.moe/artifact/latest.json"))
+          data = urllib.request.urlopen(meta["download_url"]).read()
+          assert hashlib.sha256(data).hexdigest() == meta["checksums"]["sha256"], "authlib-injector checksum mismatch"
+          open("src/main/resources/vt/authlib-injector.jar", "wb").write(data)
+          print("bundled authlib-injector", meta.get("version"))
+          PY
+
+      - name: Build jars
+        shell: bash
+        run: gradle dist "-Pappversion=$VERSION" --console=plain
+
+      - name: Make portable app (jpackage app-image)
+        shell: bash
+        run: |
+          rm -rf out && mkdir out
+          jpackage --type app-image \
+            --name "VT Launcher" \
+            --app-version "$VERSION" \
+            --input build/dist \
+            --main-jar vt-launcher.jar \
+            --main-class vt.launcher.Main \
+            --icon src/main/resources/vt/vt.ico \
+            --dest out \
+            --add-modules java.base,java.desktop,java.logging,java.management,java.net.http,java.xml,jdk.management,jdk.unsupported,jdk.httpserver,jdk.crypto.ec \
+            --java-options "-Dfile.encoding=UTF-8" \
+            --java-options "-XX:+UseSerialGC" \
+            --java-options "-XX:TieredStopAtLevel=1" \
+            --java-options "-XX:-UsePerfData" \
+            --java-options "-Xshare:auto" \
+            --java-options "-XX:+AutoCreateSharedArchive" \
+            --java-options "-XX:SharedArchiveFile=\$APPDIR/vt-launcher.jsa"
+          powershell -NoProfile -Command "Compress-Archive -Path 'out/VT Launcher' -DestinationPath 'VT-Launcher-portable-v$VERSION.zip'"
+
+      # A single Setup.exe with the launcher's colours and logo (Inno Setup).
+      - name: Make setup installer
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          python installer/make_images.py
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "installer\vt-setup.iss"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: VT-Launcher
+          path: |
+            VT-Launcher-portable-v*.zip
+            installer-out/VT-Launcher-Setup-v*.exe
+          if-no-files-found: ignore
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: VT Launcher v${{ env.VERSION }}
+          files: |
+            VT-Launcher-portable-v*.zip
+            installer-out/VT-Launcher-Setup-v*.exe
+          generate_release_notes: true
