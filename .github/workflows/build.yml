@@ -151,14 +151,30 @@ jobs:
             --java-options "-XX:SharedArchiveFile=\$APPDIR/vt-launcher.jsa"
           powershell -NoProfile -Command "Compress-Archive -Path 'out/VT Launcher' -DestinationPath 'VT-Launcher-portable-v$VERSION.zip'"
 
-      # A single Setup.exe with the launcher's colours and logo (Inno Setup).
+      # Simple dark one-page Setup.exe (Inno Setup). If the styled script fails to compile, the plain one is used,
+      # so there is always a Setup.exe. A failure is shown as a red error in the run summary.
       - name: Make setup installer
-        continue-on-error: true
         shell: pwsh
         run: |
-          choco install innosetup -y --no-progress
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            for ($i = 1; $i -le 3; $i++) {
+              choco install innosetup -y --no-progress
+              if (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") { break }
+              Start-Sleep -Seconds 10
+            }
+          }
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup could not be installed" }
+          python -m pip install pillow
           python installer/make_images.py
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "installer\vt-setup.iss"
+          & $iscc "/DAppVersion=$env:VERSION" "installer\vt-setup.iss"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Styled installer failed to compile, building the plain installer instead"
+            & $iscc "/DAppVersion=$env:VERSION" "installer\vt-setup-basic.iss"
+            if ($LASTEXITCODE -ne 0) { throw "Both installer scripts failed" }
+          }
+          if (-not (Get-ChildItem installer-out\VT-Launcher-Setup-v*.exe)) { throw "Setup.exe was not created" }
 
       - name: Upload artifacts
         if: always()
