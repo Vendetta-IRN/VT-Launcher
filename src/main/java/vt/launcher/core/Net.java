@@ -48,7 +48,12 @@ public final class Net {
         if (host.equals("authlib-injector.yushi.moe")) return BM + "/mirrors/authlib-injector" + path;
         if (host.equals("meta.fabricmc.net")) return BM + "/fabric-meta" + path;
         if (host.equals("meta.quiltmc.org")) return BM + "/quilt-meta" + path;
-        if (host.equals("maven.fabricmc.net") || host.equals("maven.minecraftforge.net") || host.equals("maven.quiltmc.org")) {
+        if (host.equals("maven.quiltmc.org")) {
+            // Quilt's repository lives under /repository/release, the mirror's /maven root does not have that prefix
+            // (with the old mapping every Quilt library was a 404 as soon as the mirror was used).
+            return BM + "/maven" + path.replaceFirst("^/repository/(release|snapshot)", "");
+        }
+        if (host.equals("maven.fabricmc.net") || host.equals("maven.minecraftforge.net")) {
             return BM + "/maven" + path;
         }
         if (host.equals("maven.neoforged.net")) return BM + "/maven" + path.replaceFirst("^/releases", "");

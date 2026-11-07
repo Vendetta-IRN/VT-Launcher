@@ -230,5 +230,60 @@
 }
 .check-box:selected > .box { -fx-background-color: #c1121f, #c1121f; }
 
+/* Disabled check boxes / radio buttons: completely gray, and NO check mark / dot, even when "selected" */
+.check-box:disabled,
+.radio-button:disabled { -fx-opacity: 1; -fx-text-fill: rgba(255, 255, 255, 0.30); }
+.check-box:disabled > .box,
+.check-box:selected:disabled > .box,
+.check-box:indeterminate:disabled > .box {
+    -fx-background-color: rgba(255, 255, 255, 0.10), rgb(44, 44, 50);
+    -fx-background-insets: 0, 1;
+    -fx-background-radius: 5, 4;
+}
+.check-box:disabled > .box > .mark,
+.check-box:selected:disabled > .box > .mark,
+.check-box:indeterminate:disabled > .box > .mark {
+    -fx-background-color: transparent;
+    -fx-shape: "";
+    -fx-opacity: 0;
+    -fx-padding: 0;
+}
+.radio-button:disabled > .radio,
+.radio-button:selected:disabled > .radio {
+    -fx-background-color: rgba(255, 255, 255, 0.10), rgb(44, 44, 50);
+    -fx-background-insets: 0, 1;
+    -fx-background-radius: 100, 100;
+}
+.radio-button:disabled > .radio > .dot,
+.radio-button:selected:disabled > .radio > .dot {
+    -fx-background-color: transparent;
+    -fx-opacity: 0;
+    -fx-padding: 0;
+}
+
+/* ---- loading screen shown while the game starts ---- */
+.launch-scrim { -fx-background-color: rgba(8, 8, 12, 0.86); }
+.launch-card {
+    -fx-background-color: rgba(30, 30, 36, 0.96);
+    -fx-background-radius: 18;
+    -fx-border-color: rgba(255, 255, 255, 0.10);
+    -fx-border-radius: 18;
+}
+.launch-percent { -fx-font-size: 44px; -fx-font-weight: bold; -fx-text-fill: #ff5a67; }
+.launch-card .progress-bar > .track { -fx-background-color: rgb(55, 55, 62); -fx-background-radius: 6; }
+.launch-card .progress-bar > .bar { -fx-background-color: #c1121f; -fx-background-radius: 6; -fx-background-insets: 0; }
+
+/* ---- error window and error bar ---- */
+.error-title { -fx-font-size: 19px; -fx-font-weight: bold; -fx-text-fill: #ff5a67; }
+.error-bar {
+    -fx-background-color: rgba(193, 18, 31, 0.20);
+    -fx-background-radius: 12;
+    -fx-border-color: #c1121f;
+    -fx-border-radius: 12;
+}
+.error-bar-text { -fx-font-weight: bold; -fx-text-fill: #ff8a93; }
+.mono { -fx-font-family: "Consolas", "Courier New", monospace; }
+.text-area.mono { -fx-font-size: 12px; }
+
 /* Persian text */
 .root { -fx-font-family: "Segoe UI", "Tahoma", "Arial"; }

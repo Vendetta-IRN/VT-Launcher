@@ -26,22 +26,35 @@ import java.util.stream.Stream;
 
 /** Builds the java command for an installed version and starts the game (offline account). */
 public final class GameLauncher {
-    public record Started(Process process, Path log, boolean skin) {}
+    /** A started game. javaNeeded / javaUsed / ramMb / instance are kept so a crash can be explained afterwards. */
+    public record Started(Process process, Path log, boolean skin, int javaNeeded, String javaUsed, int ramMb,
+                          Path instance, long startedMillis) {}
 
     private GameLauncher() {}
 
-    public static Started launch(Config cfg, Profile prof, Consumer<String> status,
-                                 BiConsumer<Integer, Integer> progress) throws Exception {
+    /**
+     * Prepares and starts the game. The first part (up to ~45 % on the loading screen) is checking files and finding
+     * Java; after that GameMonitor follows the game's own log for the rest.
+     */
+    public static Started launch(Config cfg, Profile prof, LaunchListener ui) throws Exception {
+        Consumer<String> status = msg -> ui.progress(msg, "", -1);
         String id = prof.version;
         Path gameDir = cfg.gameDirPath();                // shared: versions, libraries, assets
         Path instance = cfg.gameDirFor(id);              // per version when isolated: saves, mods, options...
         Files.createDirectories(instance);
-        status.accept("Reading version...");
+        ui.progress("Reading version...", "", 0.02);
         JsonObject v = VersionJson.load(gameDir, id);
 
-        Path java = JavaRuntime.resolve(cfg, v, status, progress);
+        // Java: step 1 of the loading bar (0.05 - 0.30). Finding an installed Java is instant; a download shows real progress.
+        ui.progress("Looking for Java...", "", 0.05);
+        BiConsumer<Integer, Integer> javaProgress = (done, total) ->
+                ui.progress("Downloading Java (one time only)...", done + " / " + total,
+                        total == null || total == 0 ? -1 : 0.05 + 0.25 * done / total);
+        JavaRuntime.Choice choice = JavaRuntime.choose(cfg, v, status, javaProgress);
+        Path java = choice.exe();
+        ui.progress("Using " + choice.origin(), "", 0.30);
 
-        status.accept("Preparing...");
+        ui.progress("Checking game files...", "", 0.32);
         Path libs = gameDir.resolve("libraries");
         Path assets = gameDir.resolve("assets");
         String clientId = v.get("clientJarId").getAsString();
@@ -57,6 +70,7 @@ public final class GameLauncher {
                     + "). Use Repair on the Versions page.");
         }
         String cp = cpPaths.stream().map(Path::toString).collect(Collectors.joining(File.pathSeparator));
+        ui.progress("Preparing...", "", 0.38);
 
         String uuid = UUID.nameUUIDFromBytes(("OfflinePlayer:" + prof.player).getBytes(StandardCharsets.UTF_8))
                 .toString().replace("-", "");
@@ -98,26 +112,25 @@ public final class GameLauncher {
             cmd.addAll(Arrays.asList(cfg.jvmArgs.trim().split("\\s+")));
         }
 
-        // local skin / cape through authlib-injector + a tiny local server
+        // Skin / cape through authlib-injector + a tiny local server. A profile without its own skin gets the
+        // default Steve (classic) or Alex (slim), so the game shows the model that was chosen in Profiles.
         SkinServer skinServer = null;
-        if (prof.hasSkin || prof.hasCape) {
-            try {
-                Path injector = SkinService.ensureInjector(cfg, status);
-                byte[] skin = prof.hasSkin && Files.exists(prof.skinFile(cfg)) ? Files.readAllBytes(prof.skinFile(cfg)) : null;
-                byte[] cape = prof.hasCape && Files.exists(prof.capeFile(cfg)) ? Files.readAllBytes(prof.capeFile(cfg)) : null;
-                if (skin != null || cape != null) {
-                    skinServer = new SkinServer(uuid, prof.player, skin, "slim".equals(prof.skinModel), cape);
-                    cmd.add("-javaagent:" + injector + "=" + skinServer.url());
-                    cmd.add("-Dauthlibinjector.noLogFile=true");
-                    cmd.add("-Dauthlibinjector.mojangNamespace=disabled");
-                }
-            } catch (Exception e) {
-                Log.warn("Skin support unavailable: " + e.getMessage());
-                status.accept("Skin support unavailable, starting without skin...");
-                if (skinServer != null) {
-                    skinServer.close();
-                    skinServer = null;
-                }
+        try {
+            Path injector = SkinService.ensureInjector(cfg, status);
+            boolean slim = "slim".equals(prof.skinModel);
+            boolean ownSkin = prof.hasSkin && Files.exists(prof.skinFile(cfg));
+            byte[] skin = ownSkin ? Files.readAllBytes(prof.skinFile(cfg)) : DefaultSkins.png(cfg, slim);
+            byte[] cape = prof.hasCape && Files.exists(prof.capeFile(cfg)) ? Files.readAllBytes(prof.capeFile(cfg)) : null;
+            skinServer = new SkinServer(uuid, prof.player, skin, slim, cape);
+            cmd.add("-javaagent:" + injector + "=" + skinServer.url());
+            cmd.add("-Dauthlibinjector.noLogFile=true");
+            cmd.add("-Dauthlibinjector.mojangNamespace=disabled");
+        } catch (Exception e) {
+            Log.warn("Skin support unavailable: " + e.getMessage());
+            ui.progress("Skin support unavailable, starting without skin...", "", 0.42);
+            if (skinServer != null) {
+                skinServer.close();
+                skinServer = null;
             }
         }
 
@@ -153,7 +166,7 @@ public final class GameLauncher {
         pruneLogs(logDir);
 
         Log.info("Launching " + id + ": " + String.join(" ", cmd));
-        status.accept("Starting game...");
+        ui.progress("Starting Java...", "", 0.45);
         ProcessBuilder pb = new ProcessBuilder(cmd)
                 .directory(instance.toFile())
                 .redirectErrorStream(true)
@@ -167,7 +180,8 @@ public final class GameLauncher {
         }
         SkinServer srv = skinServer;
         if (srv != null) p.onExit().thenRun(srv::close);
-        return new Started(p, log, srv != null);
+        return new Started(p, log, srv != null, JavaRuntime.requiredMajor(v), choice.origin(), cfg.ramMb,
+                instance, System.currentTimeMillis());
     }
 
     private static List<Path> classpath(JsonObject v, Path libs, Path clientJar) {

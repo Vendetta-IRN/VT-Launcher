@@ -11,7 +11,6 @@ import javafx.scene.Group;
 import javafx.scene.Node;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
-import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
@@ -35,13 +34,16 @@ import javafx.stage.Stage;
 import vt.launcher.core.AppInfo;
 import vt.launcher.core.BackupService;
 import vt.launcher.core.Config;
+import vt.launcher.core.CrashAnalyzer;
+import vt.launcher.core.LaunchListener;
 import vt.launcher.core.GameLauncher;
+import vt.launcher.core.GameMonitor;
 import vt.launcher.core.Log;
 import vt.launcher.core.Manifest;
 import vt.launcher.core.Profile;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static vt.launcher.ui.I18n.t;
@@ -58,11 +60,15 @@ public class MainView extends StackPane {
     private final ImageView face = new ImageView();
     private final Label playerName = new Label();
     private boolean syncing = false;
+    private final LaunchOverlay overlay = new LaunchOverlay();
+    private final HBox errorBar = new HBox(12);
+    private final Label errorText = new Label();
+    private CrashAnalyzer.Report lastReport;
 
     public MainView(Config cfg) {
         this.cfg = cfg;
         this.state = new ProfileState(cfg);
-        getChildren().addAll(buildBackground(), buildLayout());
+        getChildren().addAll(buildBackground(), buildLayout(), overlay);
         refreshInstalled();
     }
 
@@ -167,7 +173,24 @@ public class MainView extends StackPane {
         bar.setPadding(new Insets(14, 26, 20, 26));
         bar.getStyleClass().add("bottom-bar");
 
-        VBox right = new VBox(pages, bar);
+        errorText.getStyleClass().add("error-bar-text");
+        errorText.setWrapText(true);
+        HBox.setHgrow(errorText, Priority.ALWAYS);
+        Button errDetails = new Button(t("error.view"));
+        errDetails.setOnAction(e -> {
+            if (lastReport != null) ErrorDialog.show(lastReport);
+        });
+        Button errClose = new Button("x");
+        errClose.setOnAction(e -> clearError());
+        errorBar.getChildren().addAll(errorText, errDetails, errClose);
+        errorBar.setAlignment(Pos.CENTER_LEFT);
+        errorBar.getStyleClass().add("error-bar");
+        errorBar.setPadding(new Insets(10, 14, 10, 16));
+        errorBar.setVisible(false);
+        errorBar.setManaged(false);
+        VBox.setMargin(errorBar, new Insets(0, 26, 0, 26));
+
+        VBox right = new VBox(pages, errorBar, bar);
         VBox.setVgrow(pages, Priority.ALWAYS);
 
         BorderPane main = new BorderPane();
@@ -206,12 +229,7 @@ public class MainView extends StackPane {
     private void syncFromProfile() {
         Profile p = state.active.get();
         if (p == null) return;
-        Image skin = null;
-        try {
-            if (p.hasSkin && Files.exists(p.skinFile(cfg))) skin = new Image(p.skinFile(cfg).toUri().toString());
-        } catch (Exception ignored) {
-        }
-        face.setImage(SkinFace.face(skin, 48));
+        face.setImage(SkinFace.face(Skins.imageFor(cfg, p), 48)); // own skin, or the default Steve / Alex
         playerName.setText(p.player);
 
         syncing = true;
@@ -237,9 +255,22 @@ public class MainView extends StackPane {
     private void setLaunching(boolean on) {
         playBtn.setDisable(on);
         versionBox.setDisable(on);
-        launchBar.setVisible(on);
-        if (on) launchBar.setProgress(-1);
+        launchBar.setVisible(false);
         if (!on) launchStatus.setText("");
+    }
+
+    private void clearError() {
+        errorBar.setVisible(false);
+        errorBar.setManaged(false);
+    }
+
+    /** Shows the error in a window and keeps a red bar above the Play button until the next launch. */
+    private void showFailure(CrashAnalyzer.Report r) {
+        lastReport = r;
+        errorText.setText(r.diagnosis().title());
+        errorBar.setManaged(true);
+        errorBar.setVisible(true);
+        ErrorDialog.show(r);
     }
 
     private void play() {
@@ -249,69 +280,109 @@ public class MainView extends StackPane {
             Dlg.alert(Alert.AlertType.INFORMATION, t("pick.version")).showAndWait();
             return;
         }
+        clearError();
         prof.version = id;
         state.save();
         Stage stage = (Stage) getScene().getWindow();
+        AtomicBoolean cancelled = new AtomicBoolean();
+        AtomicReference<Process> proc = new AtomicReference<>();
+
         setLaunching(true);
-        launchStatus.setText(t("launching"));
+        overlay.open(id, prof.player, () -> {
+            cancelled.set(true);
+            Process p = proc.get();
+            if (p != null) p.destroyForcibly();
+            overlay.close();
+            setLaunching(false);
+        });
+
+        // one listener: preparation progress, then the game's own loading progress, then window / exit
+        LaunchListener ui = new LaunchListener() {
+            @Override
+            public void progress(String stageText, String detail, double fraction) {
+                Platform.runLater(() -> {
+                    if (!cancelled.get()) overlay.update(stageText, detail, fraction);
+                });
+            }
+
+            @Override
+            public void windowOpened() {
+                Platform.runLater(() -> {
+                    if (!cancelled.get()) onWindowOpened(stage);
+                });
+            }
+        };
+
         Thread.ofPlatform().daemon().start(() -> {
             try {
-                GameLauncher.Started s = GameLauncher.launch(cfg, prof,
-                        msg -> Platform.runLater(() -> launchStatus.setText(msg)),
-                        (done, total) -> {
-                            if (done.equals(total) || done % 10 == 0) {
-                                Platform.runLater(() -> launchBar.setProgress(total == 0 ? 1 : (double) done / total));
-                            }
-                        });
-                Platform.runLater(() -> afterStart(stage, s));
-            } catch (Exception ex) {
-                Log.error("Launch failed: " + id, ex);
-                Platform.runLater(() -> {
-                    setLaunching(false);
-                    Alert al = Dlg.alert(Alert.AlertType.ERROR, ex.getMessage());
-                    al.setHeaderText(t("launch.failed"));
-                    al.showAndWait();
-                });
-            }
-        });
-    }
+                GameLauncher.Started s = GameLauncher.launch(cfg, prof, ui);
+                if (cancelled.get()) {
+                    s.process().destroyForcibly();
+                    return;
+                }
+                proc.set(s.process());
+                GameMonitor.start(cfg, s, new LaunchListener() {
+                    @Override
+                    public void progress(String st, String d, double f) {
+                        ui.progress(st, d, f);
+                    }
 
-    private void afterStart(Stage stage, GameLauncher.Started s) {
-        launchBar.setVisible(false);
-        launchStatus.setText(t("game.running"));
-        String mode = cfg.afterLaunch == null ? "keep" : cfg.afterLaunch;
-        if (mode.equals("close") && s.skin()) mode = "minimize"; // the launcher hosts the local skin server
-        if (mode.equals("close")) {
-            Platform.exit();
-            return;
-        }
-        if (mode.equals("minimize")) stage.setIconified(true);
+                    @Override
+                    public void windowOpened() {
+                        ui.windowOpened();
+                    }
 
-        s.process().onExit().thenAccept(p -> Platform.runLater(() -> {
-            setLaunching(false);
-            if (stage.isIconified()) stage.setIconified(false);
-            stage.toFront();
-            int code = p.exitValue();
-            if (cfg.autoBackup) {
-                Thread.ofVirtual().start(() -> {
-                    try {
-                        BackupService.create(cfg, (a, b) -> {
-                        });
-                    } catch (Exception ex) {
-                        Log.warn("Auto backup failed: " + ex.getMessage());
+                    @Override
+                    public void exited(int code, boolean windowWasOpen) {
+                        boolean wasCancelled = cancelled.get();
+                        CrashAnalyzer.Report rep = null;
+                        if (!wasCancelled && code != 0) {
+                            rep = CrashAnalyzer.analyze(code, s.log(), s.instance(), s.startedMillis(),
+                                    s.javaNeeded(), s.javaUsed(), s.ramMb(), !windowWasOpen);
+                        }
+                        CrashAnalyzer.Report r = rep;
+                        Platform.runLater(() -> onGameExit(stage, wasCancelled, r));
                     }
                 });
+            } catch (Exception ex) {
+                Log.error("Launch failed: " + id, ex);
+                CrashAnalyzer.Report r = CrashAnalyzer.fromException(ex, cfg.vtDir().resolve("logs"));
+                Platform.runLater(() -> {
+                    overlay.close();
+                    setLaunching(false);
+                    if (!cancelled.get()) showFailure(r);
+                });
             }
-            if (code != 0) showCrash(code, s.log());
-        }));
+        });
     }
 
-    private void showCrash(int code, Path log) {
-        ButtonType open = new ButtonType(t("open.log"));
-        Alert al = Dlg.alert(Alert.AlertType.ERROR, t("game.crashed") + " (" + code + ")\n" + log, open, ButtonType.CLOSE);
-        al.showAndWait().ifPresent(b -> {
-            if (b == open) Dlg.browse(log.getParent());
-        });
+    /** The game window is open: loading is done. */
+    private void onWindowOpened(Stage stage) {
+        overlay.finish();
+        launchStatus.setText(t("game.running"));
+        String mode = cfg.afterLaunch == null ? "keep" : cfg.afterLaunch;
+        // the launcher hosts the local skin server (own skin or default Steve/Alex), so it cannot close while the game runs
+        if (mode.equals("close")) mode = "minimize";
+        if (mode.equals("minimize")) stage.setIconified(true);
+    }
+
+    private void onGameExit(Stage stage, boolean cancelled, CrashAnalyzer.Report report) {
+        overlay.close();
+        setLaunching(false);
+        if (stage.isIconified()) stage.setIconified(false);
+        stage.toFront();
+        if (cancelled) return;
+        if (cfg.autoBackup) {
+            Thread.ofVirtual().start(() -> {
+                try {
+                    BackupService.create(cfg, (a, b) -> {
+                    });
+                } catch (Exception ex) {
+                    Log.warn("Auto backup failed: " + ex.getMessage());
+                }
+            });
+        }
+        if (report != null) showFailure(report);
     }
 
     /** A page that is created on first use. */

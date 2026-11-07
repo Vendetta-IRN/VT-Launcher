@@ -162,9 +162,8 @@ public class ProfilesPage extends HBox {
     private void refreshPreview() {
         Profile p = st.active.get();
         if (p == null) return;
-        Image skin = null;
         Image cape = null;
-        if (p.hasSkin && Files.exists(p.skinFile(cfg))) skin = new Image(p.skinFile(cfg).toUri().toString());
+        Image skin = Skins.imageFor(cfg, p); // own skin, or default Steve (classic) / Alex (slim)
         if (p.hasCape && Files.exists(p.capeFile(cfg))) cape = new Image(p.capeFile(cfg).toUri().toString());
         preview.setSkin(skin, "slim".equals(p.skinModel), cape);
     }

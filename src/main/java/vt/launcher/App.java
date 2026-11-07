@@ -64,6 +64,7 @@ public class App extends Application {
         stage.setScene(scene);
         stage.show();
         Manifest.preload();
+        Thread.ofVirtual().start(() -> vt.launcher.core.JavaRuntime.detect(false)); // so PLAY does not wait for it
     }
 
     @Override

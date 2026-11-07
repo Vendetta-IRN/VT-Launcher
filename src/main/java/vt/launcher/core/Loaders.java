@@ -219,11 +219,31 @@ public final class Loaders {
         Files.write(vdir.resolve(id + ".json"), pj);
         try {
             VersionInstaller.ensureFiles(id, root, status, progress);
+            verifyLibraries(p, root);
         } catch (Exception e) {
             deleteDir(vdir); // do not leave a half-installed version in the list
-            throw e;
+            String loaderName = base.equals(QUILT_META) ? "Quilt" : "Fabric";
+            Log.error(loaderName + " install failed for " + mc + " / " + loader, e);
+            throw new IOException(loaderName + " " + loader + " for Minecraft " + mc + " could not be installed.\n"
+                    + e.getMessage(), e);
         }
         return id;
+    }
+
+    /** Every library on the class path must exist on disk, otherwise the game would fail at launch. */
+    private static void verifyLibraries(JsonObject profile, Path root) throws IOException {
+        List<String> missing = new ArrayList<>();
+        if (profile.has("libraries")) {
+            for (JsonElement le : profile.getAsJsonArray("libraries")) {
+                JsonObject lib = le.getAsJsonObject();
+                if (!lib.has("name")) continue;
+                String rel = GameLauncher.mavenPath(lib.get("name").getAsString());
+                if (!Files.exists(root.resolve("libraries").resolve(rel))) missing.add(rel);
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw new IOException(missing.size() + " library files are missing after the download, e.g. " + missing.get(0));
+        }
     }
 
     // ---- Forge / NeoForge (official installer, run without a window) ----

@@ -28,6 +28,16 @@ import java.util.zip.ZipInputStream;
 public final class VersionInstaller {
     private static final String OS = "windows";
 
+    /** Maven repositories tried for libraries that name no (working) repository. The first is Mojang's own. */
+    private static final String[] REPOS = {
+            "https://libraries.minecraft.net/",
+            "https://maven.quiltmc.org/repository/release/",
+            "https://maven.fabricmc.net/",
+            "https://repo1.maven.org/maven2/",
+            "https://maven.minecraftforge.net/",
+            "https://maven.neoforged.net/releases/"
+    };
+
     private record NativeLib(Path jar, List<String> exclude) {}
 
     private record Plan(List<Job> jobs, List<NativeLib> natives, JsonObject index,
@@ -169,10 +179,16 @@ public final class VersionInstaller {
                 } else if (lib.has("name") && !lib.has("natives")) {
                     String name = lib.get("name").getAsString();
                     String rel = GameLauncher.mavenPath(name);
-                    String base = lib.has("url") ? lib.get("url").getAsString() : "https://libraries.minecraft.net/";
+                    // Fabric/Quilt profiles name a repository per library, but some entries have none (or an empty
+                    // one). Those used to be looked up only on Mojang's server, which does not host Quilt/Fabric
+                    // libraries, so the whole install failed. Now every known repository is tried in turn.
+                    String base = lib.has("url") && !lib.get("url").getAsString().isBlank()
+                            ? lib.get("url").getAsString() : REPOS[0];
                     if (!base.endsWith("/")) base += "/";
                     String sha = lib.has("sha1") ? lib.get("sha1").getAsString() : "";
-                    jobs.add(new Job(base + rel, libs.resolve(rel), sha));
+                    List<String> fallbacks = new ArrayList<>();
+                    for (String r : REPOS) if (!r.equals(base)) fallbacks.add(r + rel);
+                    jobs.add(new Job(base + rel, libs.resolve(rel), sha, fallbacks));
                 }
 
                 if (lib.has("natives") && lib.getAsJsonObject("natives").has(OS) && dl != null && dl.has("classifiers")) {

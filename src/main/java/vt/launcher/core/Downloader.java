@@ -20,7 +20,15 @@ import java.util.function.BiConsumer;
 
 /** Parallel downloader (virtual threads) with SHA1 verification and retries. */
 public final class Downloader {
-    public record Job(String url, Path path, String sha1) {}
+    /**
+     * url = first address to try. fallbacks = other addresses for the same file, tried when the first one
+     * answers "not found" or is down (used for maven libraries that can live on more than one server).
+     */
+    public record Job(String url, Path path, String sha1, List<String> fallbacks) {
+        public Job(String url, Path path, String sha1) {
+            this(url, path, sha1, List.of());
+        }
+    }
 
     private Downloader() {}
 
@@ -46,18 +54,31 @@ public final class Downloader {
         if (Files.exists(j.path()) && (!check || sha1(j.path()).equalsIgnoreCase(j.sha1()))) return;
         Files.createDirectories(j.path().getParent());
         Path tmp = j.path().resolveSibling(j.path().getFileName() + ".part");
+
+        List<String> urls = new ArrayList<>();
+        urls.add(j.url());
+        if (j.fallbacks() != null) {
+            for (String f : j.fallbacks()) if (!urls.contains(f)) urls.add(f);
+        }
+
         IOException last = new IOException("unknown error");
-        for (int i = 0; i < 4; i++) {
-            try {
-                Net.download(j.url(), tmp);
-                if (check && !sha1(tmp).equalsIgnoreCase(j.sha1())) {
-                    last = new IOException("sha1 mismatch");
-                    continue;
+        for (String url : urls) {
+            int tries = urls.size() > 1 ? 2 : 4;
+            for (int i = 0; i < tries; i++) {
+                try {
+                    Net.download(url, tmp);
+                    if (check && !sha1(tmp).equalsIgnoreCase(j.sha1())) {
+                        last = new IOException("sha1 mismatch for " + url);
+                        continue;
+                    }
+                    Files.move(tmp, j.path(), StandardCopyOption.REPLACE_EXISTING);
+                    return;
+                } catch (Net.HttpStatus e) {
+                    last = e;
+                    if (e.status == 404 || e.status == 400 || e.status == 403) break; // not on this server: next one
+                } catch (IOException e) {
+                    last = e;
                 }
-                Files.move(tmp, j.path(), StandardCopyOption.REPLACE_EXISTING);
-                return;
-            } catch (IOException e) {
-                last = e;
             }
         }
         Files.deleteIfExists(tmp);

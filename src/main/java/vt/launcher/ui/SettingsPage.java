@@ -28,6 +28,7 @@ import vt.launcher.core.BackupService;
 import vt.launcher.core.Config;
 import vt.launcher.core.FolderMover;
 import vt.launcher.core.JavaRuntime;
+import vt.launcher.core.WorldExport;
 import vt.launcher.core.Log;
 import vt.launcher.core.Net;
 import vt.launcher.core.SystemInfo;
@@ -65,6 +66,7 @@ public class SettingsPage extends ScrollPane {
                 javaSection(),
                 behavior(),
                 backups(),
+                worlds(),
                 settingsFile());
         content.getStyleClass().add("page");
         content.setPadding(new Insets(28, 30, 20, 30));
@@ -179,10 +181,24 @@ public class SettingsPage extends ScrollPane {
                 cfg.save();
             }
         });
-        ram.setOnScroll(e -> { // mouse wheel: one step per notch
-            if (e.getDeltaY() == 0) return;
-            ram.setValue(Math.max(0, Math.min(steps, Math.round(ram.getValue()) + (e.getDeltaY() > 0 ? 1 : -1))));
-            e.consume();
+        // The memory slider changes ONLY by dragging its handle: no mouse wheel, no clicking the track, no arrow keys.
+        // (The wheel event is left alone so it still scrolls the settings page.)
+        boolean[] dragFromThumb = {false};
+        ram.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, e -> {
+            dragFromThumb[0] = isThumb(e.getTarget(), ram);
+            if (!dragFromThumb[0]) e.consume();
+        });
+        ram.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_DRAGGED, e -> {
+            if (!dragFromThumb[0]) e.consume();
+        });
+        ram.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_RELEASED, e -> {
+            if (!dragFromThumb[0]) e.consume();
+        });
+        ram.addEventFilter(javafx.scene.input.KeyEvent.ANY, e -> {
+            switch (e.getCode()) {
+                case LEFT, RIGHT, UP, DOWN, HOME, END, PAGE_UP, PAGE_DOWN -> e.consume();
+                default -> { }
+            }
         });
         HBox ramRow = new HBox(14, ram, value);
         ramRow.setAlignment(Pos.CENTER_LEFT);
@@ -259,6 +275,15 @@ public class SettingsPage extends ScrollPane {
         return Math.max(0, Math.min(steps, Math.round((mb - RAM_MIN) / (float) RAM_STEP)));
     }
 
+    private static boolean isThumb(Object target, Node slider) {
+        Node n = target instanceof Node x ? x : null;
+        while (n != null && n != slider) {
+            if (n.getStyleClass().contains("thumb")) return true;
+            n = n.getParent();
+        }
+        return false;
+    }
+
     private static String ramText(int step) {
         int mb = RAM_MIN + step * RAM_STEP;
         return mb + " MB  (" + String.format("%.2f", mb / 1024.0) + " GB)";
@@ -322,11 +347,70 @@ public class SettingsPage extends ScrollPane {
         Label hint = new Label(t("java.hint"));
         hint.getStyleClass().add("muted");
         hint.setWrapText(true);
+
+        // Java that is already installed on this PC (found automatically; nothing has to be imported)
+        Label detectedTitle = new Label(t("java.detected"));
+        detectedTitle.getStyleClass().add("muted");
+        ListView<String> detected = new ListView<>();
+        detected.setPlaceholder(new Label(t("java.searching")));
+        detected.setPrefHeight(130);
+        detected.setFocusTraversable(false);
+        Runnable scan = () -> {
+            detected.getItems().clear();
+            detected.setPlaceholder(new Label(t("java.searching")));
+            Thread.ofVirtual().start(() -> {
+                List<JavaRuntime.Found> found = JavaRuntime.detect(true);
+                List<String> rows = found.stream().map(JavaRuntime.Found::toString).toList();
+                Platform.runLater(() -> {
+                    detected.setPlaceholder(new Label(t("java.nodetected")));
+                    detected.getItems().setAll(rows);
+                });
+            });
+        };
+        Button rescan = new Button(t("java.rescan"));
+        rescan.setOnAction(e -> scan.run());
+        scan.run();
         Label where = new Label(t("java.where") + ": " + JavaRuntime.baseDir(cfg));
         where.getStyleClass().add("muted");
         where.setWrapText(true);
 
-        return section("section.java", hint, lv, new HBox(8, add, remove), where);
+        Label importedTitle = new Label(t("java.imported"));
+        importedTitle.getStyleClass().add("muted");
+        return section("section.java", hint, detectedTitle, detected, new HBox(8, rescan), importedTitle, lv, new HBox(8, add, remove), where);
+    }
+
+    // ---------- Worlds: export / backup ----------
+    private VBox worlds() {
+        ListView<WorldExport.World> lv = new ListView<>();
+        lv.setPrefHeight(170);
+        lv.setPlaceholder(new Label(t("world.none")));
+        lv.getSelectionModel().setSelectionMode(javafx.scene.control.SelectionMode.MULTIPLE);
+        lv.setCellFactory(l -> new ListCell<>() {
+            @Override
+            protected void updateItem(WorldExport.World w, boolean empty) {
+                super.updateItem(w, empty);
+                setText(empty || w == null ? null : w.name() + "   -   " + w.where() + "   -   "
+                        + (w.size() / 1_048_576) + " MB   -   " + w.modified());
+            }
+        });
+        Runnable load = () -> Thread.ofVirtual().start(() -> {
+            List<WorldExport.World> all = WorldExport.list(cfg, t("world.shared"));
+            Platform.runLater(() -> lv.getItems().setAll(all));
+        });
+        load.run();
+
+        Button export = new Button(t("world.export"));
+        export.setOnAction(e -> WorldExporter.run(getScene().getWindow(),
+                new ArrayList<>(lv.getSelectionModel().getSelectedItems())));
+        Button exportAll = new Button(t("world.export.all"));
+        exportAll.setOnAction(e -> WorldExporter.run(getScene().getWindow(), new ArrayList<>(lv.getItems())));
+        Button refresh = new Button(t("world.refresh"));
+        refresh.setOnAction(e -> load.run());
+
+        Label hint = new Label(t("world.hint"));
+        hint.getStyleClass().add("muted");
+        hint.setWrapText(true);
+        return section("section.worlds", hint, lv, new HBox(8, export, exportAll, refresh));
     }
 
     // ---------- After launch (options shown right here) ----------

@@ -1,7 +1,6 @@
 build/
 .gradle/
 out/
-installer/
 *.exe
 VT-Launcher-*.zip
 .idea/

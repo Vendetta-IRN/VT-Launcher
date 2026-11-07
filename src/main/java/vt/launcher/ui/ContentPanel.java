@@ -125,6 +125,12 @@ public class ContentPanel extends VBox {
                 Region sp = new Region();
                 HBox.setHgrow(sp, Priority.ALWAYS);
                 HBox row = new HBox(12, on, iconBox, text, sp, size, del);
+                if (type == Type.WORLDS) {
+                    Button exp = new Button(t("world.export"));
+                    exp.setOnAction(ev -> WorldExporter.run(getScene().getWindow(), java.util.List.of(
+                            new vt.launcher.core.WorldExport.World(en.display(), en.fileName(), "", en.path(), en.size(), ""))));
+                    row.getChildren().add(row.getChildren().size() - 1, exp);
+                }
                 row.setAlignment(Pos.CENTER_LEFT);
                 setGraphic(row);
                 setText(null);
